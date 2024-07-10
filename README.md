@@ -14,7 +14,7 @@ Rocket Science
 
 <hr />
 
-<img src="readme/logo.png" alt="RocketScience" width="350" />
+<img src=".github/readme/logo.png" alt="RocketScience" width="350" />
     
 ### Repository trunk with all the projects I have left in the middle of the road.
     
@@ -24,4 +24,4 @@ Rocket Science
 
 | Project | Date | Description |
 | ------- | ---- | ----------- |
-| [barch](../barch) | Feb 25, 2024 | Custom [Arch Linux](https://archlinux.org) installer script in Bash with unresolved issues. |
+| [barch](barch) | Feb 25, 2024 | Custom [Arch Linux](https://archlinux.org) installer script in Bash with unresolved issues. |
