@@ -1,0 +1,15 @@
+# Packer
+/**/packer_cache/
+
+# VMWare
+/**/*.lck
+/**/*.log
+/**/*.nvram
+/**/*.scoreboard
+/**/*.vmdk
+/**/*.vmem
+/**/*.vmsd
+/**/*.vmsn
+/**/*.vmss
+/**/*.vmx
+/**/*.vmxf
