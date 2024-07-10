@@ -1,0 +1,11 @@
+---
+services:
+  database:
+    container_name: byakugan-db
+    image: postgres:alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-byakugan}
+      POSTGRES_USER: ${POSTGRES_USER:-byakugan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-byakugan}
+    ports: [5432:5432]
+    restart: unless-stopped
