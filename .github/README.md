@@ -22,5 +22,6 @@ Rocket Science
 
 </div>
 
-| Project | Description |
-| ------- | ----------- |
+| Project | Date | Description |
+| ------- | ---- | ----------- |
+| [barch](../barch) | Feb 25, 2024 | Custom [Arch Linux](https://archlinux.org) installer script in Bash with unresolved issues. |
