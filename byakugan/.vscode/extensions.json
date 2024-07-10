@@ -1,0 +1,7 @@
+{
+    "recommendations": [
+        "rust-lang.rust-analyzer",
+        "panicbit.cargo",
+        "tamasfe.even-better-toml"
+    ]
+}
