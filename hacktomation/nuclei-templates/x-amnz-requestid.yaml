@@ -1,0 +1,36 @@
+---
+id: x-amzn-requestid
+
+info:
+  name: Reflected X-Amzn-RequestId without validation/sanitization
+  author: cosasdepuma
+  severity: low
+  description: The application processes but does not validate or sanitize the X-Amzn-RequestId header.
+  reference:
+    - https://docs.fluidattacks.com/criteria/vulnerabilities/185/
+    - https://hackerone.com/reports/798686
+  remediation: Ignore the X-Amzn-RequestId request header and discard unsafe inputs.
+  classification:
+    cvss-metrics: "3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"
+    cvss-score: 3.7
+    cwe-id: CWE-644
+  metadata:
+    max-request: 1
+    shodan-query: "X-Amzn-RequestId"
+  tags: hackerone,cosasdepuma,amazon,aws,headers
+
+variables:
+  canary: "<{{to_lower(rand_base(20))}}/>"
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      X-Amzn-RequestId: "{{canary}}"
+
+    matchers:
+      - type: dsl
+        name: reflected-header
+        dsl:
+          - "contains(to_lower(header), 'x-amzn-requestid: {{canary}}')"

@@ -1,0 +1,112 @@
+---
+id: symfony
+
+info:
+  name: Symfony
+  author: cosasdepuma
+  severity: high
+  description: Symfony Debug Mode or Profiler detected.
+  reference:
+    - https://symfony.com/doc/current/profiler.html
+    - https://www.tenable.com/plugins/was/113933
+    - https://www.acunetix.com/vulnerabilities/web/symfony-profiler-open/
+    - https://www.acunetix.com/vulnerabilities/web/symfony-debug-mode-enabled/
+    - https://hackerone.com/reports/592885
+  remediation: Disable Symfony debug mode by setting `APP_DEBUG=0` and ensure that the exposed application is running in the `prod` environment. On older Symfony versions, ensure that access to `app_dev.php` is restricted to localhost. If any secret has been exposed with the debug mode, revoke and rotate it.
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    cvss-score: 7.5
+    cwe-id: CWE-200
+  metadata:
+    max-request: 9
+    verified: true
+    shodan-query: http.title:"Welcome to Symfony",http.html:"Symfony Profiler"
+  tags: hackerone,cosasdepuma,php,symfony,dev,dashboard,debug
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    redirects: true
+    max-redirects: 2
+    matchers:
+      - type: word
+        name: debug-mode
+        part: header
+        words:
+          - 'x-debug-token-link:'
+          - '/_profiler/'
+        case-insensitive: true
+        condition: and
+
+      - type: word
+        name: exposed-toolbar
+        part: body
+        words:
+          - "Symfony Web Debug Toolbar"
+
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers:
+      - type: word
+        name: default-page
+        part: body
+        words:
+          - "Welcome to Symfony"
+
+    extractors:
+      - type: regex
+        group: 1
+        regex:
+          - "([0-9.]+)</span>"
+        part: body
+
+  - method: GET
+    path:
+      - "{{BaseURL}}/_profiler/empty/search/results?limit=10"
+      - "{{BaseURL}}/app_dev.php/_profiler/empty/search/results?limit=10"
+
+    stop-at-first-match: true
+    matchers:
+      - type: word
+        name: exposed-dashboard
+        part: body
+        words:
+          - "Symfony Profiler"
+
+  - method: GET
+    path:
+      - "{{BaseURL}}/_profiler/phpinfo"
+      - "{{BaseURL}}/app_dev.php/_profiler/phpinfo"
+
+    stop-at-first-match: true
+    matchers:
+      - type: word
+        name: phpinfo
+        part: body
+        words:
+          - "PHP Version"
+
+    extractors:
+      - type: regex
+        regex:
+          - "PHP Version [0-9.]+"
+        part: body
+
+  - method: GET
+    path:
+      - "{{BaseURL}}/_profiler/open?file=app/config/parameters.yml"
+      - "{{BaseURL}}/app_dev.php/_profiler/open?file=app/config/parameters.yml"
+
+    stop-at-first-match: true
+    matchers:
+      - type: word
+        name: parameters.yml
+        part: body
+        words:
+          - "parameters:"
+          - "host:"
+        condition: and
