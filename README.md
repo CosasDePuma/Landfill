@@ -9,7 +9,7 @@
 <hr />
 
 ```ocaml
-Rocket Science
+~ You know... This is not "Rocket Science" ~
 ```
 
 <hr />
@@ -25,3 +25,4 @@ Rocket Science
 | Project | Date | Description |
 | ------- | ---- | ----------- |
 | [barch](barch) | Feb 25, 2024 | Custom [Arch Linux](https://archlinux.org) installer script in Bash with unresolved issues. |
+| [bookmarks](bookmarks/cybersecurity.md) | Jan 23, 2024 | Collection of useful cybersecurity websites and resources, abandoned with minimal content. |
