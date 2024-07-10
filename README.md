@@ -5,22 +5,20 @@
 -->
 
 <div align="center">
-
+    <img src=".github/logo.jpeg" alt="RocketScience" height="200" />
+</div>
 <hr />
 
 ```ocaml
 ~ You know... This is not "Rocket Science" ~
+
+---
+
+Repository trunk with all the projects I have left in the middle of the road.
 ```
 
 <hr />
-
-<img src=".github/readme/logo.png" alt="RocketScience" width="350" />
-    
-### Repository trunk with all the projects I have left in the middle of the road.
-    
 <br />
-
-</div>
 
 | Project | Date | Description |
 | ------- | ---- | ----------- |
