@@ -1,0 +1,27 @@
+ ____ ____ ____ ____ ____ ____ ____ ____ ____ 
+||⟠ |||S |||e |||c |||u |||r |||i |||t |||y ||
+||__|||__|||__|||__|||__|||__|||__|||__|||__||
+|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|
+
+  Ξ https://github.com/cosasdepuma/totes/ Ξ
+
+Resources:
+----------------------------------------------
+⟠ https://github.com/crytic/crytic-compile
+⟠ https://github.com/foundry-rs/foundry
+⟠ https://github.com/tj/n
+⟠ https://github.com/crytic/solc-select
+⟠ https://github.com/vyperlang/vyper
+
+Tools:
+----------------------------------------------
+⟠ https://github.com/crytic/medusa
+⟠ https://github.com/consensys/mythril
+⟠ https://github.com/crytic/pyevmasm
+⟠ https://github.com/crytic/slither
+⟠ https://github.com/crytic/tealer
+
+Notes:
+----------------------------------------------
+⬨ Use `n` to switch between different versions of `node`
+⬨ Use `solc-select` to switch between different versions of `solc`
