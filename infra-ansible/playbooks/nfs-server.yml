@@ -1,0 +1,155 @@
+---
+- name: "NFS server installation"
+  hosts: "nfs[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Install the packages"
+      block:
+        - name: "Install the packages using 'APT"
+          ansible.builtin.apt:
+            name: ["nfs-kernel-server"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Install the packages using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["nfs-utils"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Create the NFS share"
+      ansible.builtin.file:
+        path: "/mnt/nfs"
+        state: "directory"
+        mode: "0755"
+        owner: "65534"
+        group: "65534"
+      tags: ["install"]
+
+    - name: "Configure the NFS shares"
+      block:
+        - name: "Recreate the exports file"
+          ansible.builtin.file:
+            path: "/etc/exports"
+            state: "{{ item }}"
+          loop: ["absent", "touch"]
+          tags: ["install"]
+
+        - name: "Add the NFS share to the exports file"
+          ansible.builtin.lineinfile:
+            path: "/etc/exports"
+            line: "/mnt/nfs {{ item }}/32(rw,nohide,sync,all_squash,anonuid=65534,anongid=65534)"
+            state: "present"
+          loop: "{{ groups['cluster'] }}"
+          tags: ["install"]
+
+    - name: "Configure the NFS server"
+      ansible.builtin.copy:
+        dest: "/etc/nfs.conf"
+        content: |-
+          [exportd]
+          [exports]
+          [exportfs]
+          [general]
+          [gssd]
+          [lockd]
+          [mountd]
+          manage-gids=y
+          [nfsd]
+          tcp=y
+          udp=n
+          vers3=n
+          vers4=y
+          vers4.0=y
+          vers4.1=y
+          vers4.2=y
+          [nfsdcld]
+          [nfsdcltrack]
+          [nfsrahead]
+          [sm-notify]
+          [statd]
+        force: true
+      tags: ["install"]
+
+    - name: "Start the service"
+      ansible.builtin.service:
+        enabled: true
+        name: "nfs-server"
+        state: "restarted"
+      tags: ["install"]
+
+    - name: "Open the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "2049/tcp"
+        state: "enabled"
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["install"]
+
+    # +------------------------------------------+
+    # |                UNINSTALL                 |
+    # +------------------------------------------+
+
+    - name: "Close the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "2049/tcp"
+        state: "disabled"
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["uninstall"]
+
+    - name: "Stop the service"
+      ansible.builtin.service:
+        enabled: false
+        name: "nfs-server"
+        state: "stopped"
+      tags: ["uninstall"]
+
+    - name: "Remove the NFS configuration"
+      ansible.builtin.file:
+        path: "/etc/exports"
+        state: "absent"
+      tags: ["uninstall"]
+
+    - name: "Remove the packages"
+      block:
+        - name: "Remove the packages using 'APT'"
+          ansible.builtin.apt:
+            name: ["nfs-kernel-server"]
+            state: "absent"
+            autoclean: true
+            autoremove: true
+            purge: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["uninstall"]
+
+        - name: "Remove the packages using 'DNF'"
+          ansible.builtin.dnf:
+            autoremove: true
+            name: ["nfs-utils"]
+            state: "absent"
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["uninstall"]
+...

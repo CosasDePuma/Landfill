@@ -1,0 +1,135 @@
+---
+- name: "Komga stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    - name: "Check if the 'public' network exists"
+      community.docker.docker_network_info:
+        name: "public"
+      register: "public_network"
+      tags: ["start"]
+
+    - name: "'public' network should exists"
+      ansible.builtin.fail:
+        msg: "'public' network is not present"
+      when: "public_network.exists == false"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "komga"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/komga"
+        state: "directory"
+      tags: ["start"]
+
+    - name: "Create the configuration"
+      community.docker.docker_config:
+        name: "komga-config"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          ---
+          komga:
+            oauth2-account-creation: true
+          spring:
+            security:
+              oauth2:
+                client:
+                  registration:
+                    authelia:
+                      client-id: "komga"
+                      client-secret: "{{ secret }}"
+                      client-name: "Authelia"
+                      scope: "openid,profile,email"
+                      authorization-grant-type: "authorization_code"
+                      redirect-uri: "{baseScheme}://{baseHost}{basePort}{basePath}/login/oauth2/code/authelia"
+                  provider:
+                    authelia:
+                      issuer-uri: "https://auth.kike.wtf"
+                      user-name-attribute: "preferred_username"
+        # yamllint enable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "komga"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              komga:
+                image: "gotson/komga:latest"
+                networks: ["public"]
+                dns: ["{{ ansible_host }}"]
+                volumes:
+                  - "/mnt/nfs/lab/komga:/config:rw"
+                  - "/mnt/nfs/media/mangas:/media/mangas:ro"
+                configs:
+                  - source: "komga-config"
+                    target: "/config/application.yml"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.komga.rule=Host(`books.{{ domain }}`)"
+                    - "traefik.http.routers.komga.entrypoints=https"
+                    - "traefik.http.services.komga.loadbalancer.server.port=25600"
+                    - "homepage.name=Komga"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-komga"
+                    - "homepage.description=Books media server."
+                    - "homepage.href=https://books.{{ domain }}"
+            configs:
+              komga-config: { external: true }
+            networks:
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "komga"
+        state: "absent"
+      tags: ["stop"]
+
+    - name: "Remove the configuration"
+      community.docker.docker_config:
+        name: "komga-config"
+        state: "absent"
+      tags: ["stop"]
+...

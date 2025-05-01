@@ -1,0 +1,12 @@
+# Nix
+/**/*.lock
+
+# Ansible
+/**/inventory.ini
+/**/inventory.yml
+/**/inventory.yaml
+/**/audea.yml
+
+# Secrets
+/**/.env
+/**/variables.*

@@ -1,0 +1,225 @@
+---
+- name: "Nomad installation"
+  hosts: "cluster"
+  become: true
+  vars:
+    cni_version: "1.6.2"
+    extra_ports: ["53/tcp", "53/udp", "8080/tcp"]
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Ensure that the CNI plugin directory exists"
+      ansible.builtin.file:
+        path: "/opt/cni/bin"
+        state: "directory"
+        owner: "root"
+        group: "root"
+      tags: ["install"]
+
+    - name: "Download the CNI plugin"
+      ansible.builtin.unarchive:
+        src: "https://github.com/containernetworking/plugins/releases/download/v{{ cni_version }}/cni-plugins-linux-{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}-v{{ cni_version }}.tgz"  # yamllint disable-line rule:line-length
+        dest: "/opt/cni/bin"
+        remote_src: true
+        creates: "/opt/cni/bin/bridge"
+      tags: ["install"]
+
+    - name: "Install the dependencies"
+      block:
+        - name: "Install the dependencies using 'APT"
+          ansible.builtin.apt:
+            name: []  # TODO: Add the required dependencies
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Install the dependencies using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["dnf-plugins-core"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Add the Hashicorp repository"
+      ansible.builtin.shell:
+        cmd: "dnf config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo"
+        creates: "/etc/yum.repos.d/hashicorp.repo"
+      when: "ansible_pkg_mgr == 'dnf'"
+      tags: ["install"]
+
+    - name: "Install the packages"
+      block:
+        - name: "Install the packages using 'APT"
+          ansible.builtin.apt:
+            name: []  # TODO: Add the required packages
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Install the packages using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["nomad"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Create the directories"
+      ansible.builtin.file:
+        path: "/etc/nomad.d/storage"
+        state: "directory"
+        owner: "nomad"
+        group: "nomad"
+        mode: "0755"
+      tags: ["install"]
+
+    - name: "Create the configuration file"
+      ansible.builtin.copy:
+        dest: "/etc/nomad.d/nomad.hcl"
+        owner: "nomad"
+        group: "nomad"
+        mode: "0640"
+        # yamllint disable rule:indentation
+        content: |-
+          # +--------------------+
+          # |      GENERAL       |
+          # +--------------------+
+          name       = "{{ ansible_hostname }}"
+          datacenter = "homelab"
+          region     = "global"
+          data_dir   = "/etc/nomad.d/storage"
+          # +--------------------+
+          # |        LOGS        |
+          # +--------------------+
+          log_level = "INFO"
+          log_file  = "/etc/nomad.d/nomad.log"
+          # +--------------------+
+          # |       SERVER       |
+          # +--------------------+
+          server {
+            enabled           = true
+            bootstrap_expect  = {{ groups['cluster_managers'] | length }}
+          }
+          addresses {
+            http = "127.0.0.1"
+            rpc  = "{{ ansible_host }}"
+            serf = "{{ ansible_host }}"
+          }
+          advertise {
+            http = "127.0.0.1:4646"
+            rpc  = "{{ ansible_host }}:4647"
+            serf = "{{ ansible_host }}:4648"
+          }
+          # +--------------------+
+          # |       CLIENT       |
+          # +--------------------+
+          client {
+            enabled = true
+
+            meta {
+              type = "{{ 'dmz' if inventory_hostname in groups['dmz'] else 'internal' }}"
+            }
+          }
+          # +--------------------+
+          # |       CONSUL       |
+          # +--------------------+
+          consul {
+            address = "127.0.0.1:8500"
+            server_service_name = "nomad-server"
+            client_service_name = "nomad-client"
+            auto_advertise      = true
+            server_auto_join    = true
+            client_auto_join    = true
+          }
+        # yamllint enable rule:indentation
+      tags: ["install"]
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    - name: "Open the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "enabled"
+      loop: "{{ ['4647/tcp', '4648/tcp', '4648/udp'] + extra_ports }}"
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["install"]
+
+    - name: "Start the service"
+      ansible.builtin.service:
+        enabled: true
+        name: "nomad"
+        state: "restarted"
+      when: "'nomad.service' in ansible_facts.services"
+      register: "service_status"
+      tags: ["install"]
+
+    # +------------------------------------------+
+    # |                UNINSTALL                 |
+    # +------------------------------------------+
+
+    - name: "Stop the service"
+      ansible.builtin.service:
+        enabled: false
+        name: "nomad"
+        state: "stopped"
+      when: "'nomad.service' in ansible_facts.services"
+      tags: ["uninstall"]
+
+    - name: "Close the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "disabled"
+      loop: ["4647/tcp", "4648/tcp", "4648/udp"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["uninstall"]
+
+    - name: "Remove the packages"
+      block:
+        - name: "Remove the packages using 'APT'"
+          ansible.builtin.apt:
+            name: [""]  # TODO: Add the required packages
+            state: "absent"
+            autoclean: true
+            autoremove: true
+            purge: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["uninstall"]
+
+        - name: "Remove the packages using 'DNF'"
+          ansible.builtin.dnf:
+            autoremove: true
+            name: ["nomad"]
+            state: "absent"
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["uninstall"]
+
+    - name: "Remove the files and directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: "absent"
+      loop: ["/etc/nomad.d/", "/etc/yum.repos.d/hashicorp.repo"]
+      tags: ["uninstall"]
+...

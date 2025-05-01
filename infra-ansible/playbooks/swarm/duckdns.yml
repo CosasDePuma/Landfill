@@ -1,0 +1,84 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/playbook.json
+---
+- name: "DuckDNS stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "duckdns"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "duckdns"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              duckdns:
+                image: "lscr.io/linuxserver/duckdns:latest"
+                environment:
+                  - "TZ={{ tz | default('UTC') }}"
+                  - "SUBDOMAINS={{ domain | regex_replace('\\.', '') }}"
+                  - "TOKEN={{ apikeys.duckdns }}"  # TODO: API key as Secret
+                  - "UPDATE_IP=ipv4"
+                healthcheck:
+                  # yamllint disable rule:line-length
+                  test: >-
+                    /usr/bin/test "$$(/usr/bin/curl 'http://ipinfo.io/ip')" = "$$(/usr/bin/dig +short '{{ domain | regex_replace('\.', '') }}.duckdns.org')"
+                  # yamllint enable rule:line-length
+                  interval: "30s"
+                  timeout: "10s"
+                  retries: 3
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  resources:
+                    limits:
+                      cpus: "0.01"
+                      memory: "12M"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "homepage.name=DuckDNS"
+                    - "homepage.group=Daemons"
+                    - "homepage.icon=sh-duckdns"
+                    - "homepage.description=Dynamic DNS service."
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "duckdns"
+        state: "absent"
+      tags: ["stop"]
+...

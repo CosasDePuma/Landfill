@@ -1,0 +1,176 @@
+---
+- name: "OpenLDAP stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    - name: "Check if the 'public' network exists"
+      community.docker.docker_network_info:
+        name: "public"
+      register: "public_network"
+      tags: ["start"]
+
+    - name: "'public' network should exists"
+      ansible.builtin.fail:
+        msg: "'public' network is not present"
+      when: "public_network.exists == false"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "openldap"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the network"
+      community.docker.docker_network:
+        name: "ldap"
+        driver: "overlay"
+        scope: "swarm"
+        state: "present"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/openldap"
+        state: "directory"
+      tags: ["start"]
+
+    - name: "Create the schema"
+      community.docker.docker_config:
+        name: "openldap-schema"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          dn: dc={{ domain | replace('.', ',dc=') }}
+          objectClass: dcObject
+          objectClass: organization
+          dc: {{ domain | split('.') | first }}
+          o: {{ banner }}
+
+          dn: ou=Users,dc={{ domain | replace('.', ',dc=') }}
+          objectClass: organizationalUnit
+          ou: Users
+
+          dn: ou=Groups,dc={{ domain | replace('.', ',dc=') }}
+          objectClass: organizationalUnit
+          ou: Groups
+
+          dn: cn=admins,ou=Groups,dc={{ domain | replace('.', ',dc=') }}
+          cn: admins
+          objectclass: groupOfUniqueNames
+          objectclass: top
+          uniquemember: cn=admins,ou=Groups,dc={{ domain | replace('.', ',dc=') }}
+
+          dn: cn=users,ou=Groups,dc={{ domain | replace('.', ',dc=') }}
+          objectClass: posixGroup
+          cn: users
+          gidNumber: 5000
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "openldap"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              openldap:
+                image: "bitnami/openldap:latest"
+                networks: ["ldap"]
+                configs:
+                  - source: "openldap-schema"
+                    target: "/ldifs/schema.ldif"
+                volumes:
+                  - "/mnt/nfs/lab/openldap:/bitnami/openldap:rw"
+                environment:
+                  - "LDAP_ALLOW_ANON_BINDING=no"
+                  - "LDAP_ADMIN_USERNAME=admin"
+                  - "LDAP_ADMIN_PASSWORD={{ admin.password }}"
+                  - "LDAP_PORT_NUMBER=389"
+                  - "LDAP_ROOT=dc={{ domain | replace('.', ',dc=') }}"
+                  - "LDAP_SKIP_DEFAULT_TREE=yes"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "homepage.name=OpenLDAP"
+                    - "homepage.group=Daemons"
+                    - "homepage.icon=https://blog.irontec.com/wp-content/uploads/2018/07/open_ldap_plain_caterpillar-999px.png"
+                    - "homepage.description=LDAP server."
+              phpldapadmin:
+                image: "osixia/phpldapadmin:latest"
+                depends_on: ["openldap"]
+                networks: ["public", "ldap"]
+                environment:
+                  - "PHPLDAPADMIN_LDAP_HOSTS=openldap"
+                  - "PHPLDAPADMIN_HTTPS=false"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.phpldapadmin.rule=Host(`users.{{ domain }}`)"
+                    - "traefik.http.routers.phpldapadmin.entrypoints=https"
+                    - "traefik.http.services.phpldapadmin.loadbalancer.server.port=80"
+                    - "homepage.name=phpLDAPadmin"
+                    - "homepage.group=Services"
+                    - "homepage.icon=https://repository-images.githubusercontent.com/3665191/dd213f80-766c-11e9-8117-6b639095ef99"
+                    - "homepage.description=LDAP administration."
+                    - "homepage.href=https://users.{{ domain }}"
+            configs:
+              openldap-schema: { external: true }
+            networks:
+              ldap:   { external: true }
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "openldap"
+        state: "absent"
+      tags: ["stop"]
+
+    - name: "Remove the configuration"
+      community.docker.docker_config:
+        name: "openldap-schema"
+        state: "absent"
+      tags: ["stop"]
+
+    - name: "Remove the network"
+      community.docker.docker_network:
+        name: "ldap"
+        state: "absent"
+        force: true
+      tags: ["stop"]
+...

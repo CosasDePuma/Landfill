@@ -1,0 +1,275 @@
+---
+- name: "Traefik installation"
+  hosts: "dmz"
+  become: true
+  vars:
+    version: "3.3.2"
+    external_ports: ["53/tcp", "53/udp", "51820/udp"]
+    internal_ports: ["53/tcp", "53/udp", "51820/udp"]
+    tokens:
+      CF_DNS_API_TOKEN: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  tasks:
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Create the directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: "directory"
+        owner: "root"
+        group: "root"
+      loop: ["/etc/systemd/system/traefik.service.d", "/opt/traefik"]
+      tags: ["install"]
+
+    - name: "Download the binary"
+      ansible.builtin.unarchive:
+        src: "https://github.com/traefik/traefik/releases/download/v{{ version }}/traefik_v{{ version }}_linux_{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}.tar.gz"  # yamllint disable-line rule:line-length
+        dest: "/opt/traefik"
+        remote_src: true
+        creates: "/opt/traefik/traefik"
+        owner: "root"
+        group: "root"
+        mode: "0500"
+      tags: ["install"]
+
+    - name: "Create the static configuration file"
+      ansible.builtin.copy:
+        dest: "/opt/traefik/traefik.yml"
+        owner: "root"
+        group: "root"
+        mode: "0400"
+        # yamllint disable rule:indentation
+        content: |-
+          ---
+          accesslog:
+            format: "common"
+            filepath: "/data/access.log"
+          api:
+            dashboard: true
+            insecure: true
+          certificatesResolvers:
+            letsencrypt:
+              acme:
+                email: "acme@example.com"
+                storage: "/opt/certificates.json"
+                caServer: "https://acme-v02.api.letsencrypt.org/directory"
+                certificatesDuration: 8760
+                preferredChain: "ISRG Root X1"
+                keyType: "RSA8192"
+                dnsChallenge:
+                  provider: "cloudflare"
+                  delayBeforeCheck: 0
+                  resolvers: ["1.1.1.1:53", "8.8.8.8:53"]
+          entryPoints:
+            dns-tcp:   { address: ":53/tcp" }
+            dns-udp:   { address: ":53/udp" }
+            wireguard: { address: ":51820/udp" }
+            http:
+              address: ":80/tcp"
+              asDefault: true
+              forwardedHeaders: { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              proxyProtocol:    { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              http: { redirections: { entryPoint: { to: "https", scheme: "https" } } }
+            https:
+              address: ":443/tcp"
+              forwardedHeaders: { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              proxyProtocol:    { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              http: { tls: { certResolver: "letsencrypt" } }
+          global:
+            checkNewVersion: true
+            sendAnonymousUsage: false
+          log:
+            level: "DEBUG"
+          ping:
+            entrypoint: "https"
+          providers:
+            consulCatalog:
+              endpoint: { address: "127.0.0.1:8500", scheme: "http" }
+              connectAware: true
+              connectByDefault: false
+              exposedByDefault: false
+              prefix: "traefik"
+              watch: true
+            file:
+              filename: "/opt/traefik/dynamic.yml"
+              watch: true
+          ...
+        # yamllint enable rule:indentation
+      tags: ["install"]
+
+    - name: "Create the dynamic configuration file"
+      ansible.builtin.copy:
+        dest: "/opt/traefik/dynamic.yml"
+        owner: "root"
+        group: "root"
+        mode: "0400"
+        # yamllint disable rule:indentation
+        content: |-
+          ---
+          http:
+            middlewares:
+              all:
+                chain:
+                  middlewares:
+                    - compress@file
+                    - jokes@file
+                    - security@file
+              compression:
+                compress:
+                  minResponseBodyBytes: 1024
+                  excludedContentTypes: ["text/event-stream"]
+              https-only:
+                chain:
+                  middlewares:
+                    - https-redirect@file
+                    - hsts@file
+              https-redirect:
+                redirectScheme:
+                  port: 443
+                  scheme: https
+                  permanent: true
+              hsts:
+                headers:
+                  forceSTSHeader: true
+                  stsPreload: true
+                  stsSeconds: 315360000
+                  stsIncludeSubdomains: true
+              jokes:
+                headers:
+                  customResponseHeaders:
+                    Server: "'; DROP TABLE users; -- --"
+                    X-PoweredBy: Pumas, unicorns and rainbows
+                    X-NaNaNaNaNaNaNaNa: Batman!
+                    X-Clacks-Overhead: GNU Kike Fontan
+              security-headers:
+                headers:
+                  browserXssFilter: true                          # Prevent reflected XSS attacks
+                  contentTypeNosniff: true                        # Prevent browsers from trying to guess a MIME type
+                  frameDeny: true                                 # Prevent clickjacking attacks
+                  isDevelopment: false                            # Always act as if the app is in production
+                  referrerPolicy: "no-referrer"                   # Hide the Referer header
+                  customResponseHeaders:                          # Prevent more things...
+                    Cross-Origin-Embedder-Policy: "require-corp"
+                    Cross-Origin-Opener-Policy: "same-origin"
+                    Cross-Origin-Resource-Policy: "same-site"
+                    X-DNS-Prefetch-Control: "off"
+                  permissionsPolicy: "bluetooth=(), camera=(), geolocation=(), microphone=()"
+              security:
+                chain:
+                  middlewares:
+                    - security-headers@file
+                    - https-only@file
+          tls:
+            options:
+              default:
+                minVersion: VersionTLS12
+                sniStrict: true
+                cipherSuites:
+                  - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+                  - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+                  - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+                  - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+                  - TLS_FALLBACK_SCSV # RFC 7507
+                curvePreferences:
+                  - secp521r1
+                  - secp384r1
+          ...
+        # yamllint enable rule:indentation
+      tags: ["install"]
+
+    - name: "Create the systemd service file"
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/traefik.service"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+        # yamllint disable rule:indentation
+        content: |-
+          [Unit]
+          Description=Traefik
+          After=network.target
+          [Service]
+          ExecStart=/opt/traefik/traefik --configFile=/opt/traefik/traefik.yml
+          Restart=always
+          RestartSec=5
+          [Install]
+          WantedBy=multi-user.target
+        # yamllint enable rule:indentation
+      tags: ["install"]
+
+    - name: "Configure the environment variables for the systemd service file"
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/traefik.service.d/traefik.conf"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+        # yamllint disable rule:indentation
+        content: |-
+          [Service]
+          {% for key, value in tokens.items() -%}
+          Environment="{{ key }}={{ value }}"
+          {% endfor %}
+        # yamllint enable rule:indentation
+      tags: ["install"]
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    - name: "Open the external firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "enabled"
+      loop: "{{ external_ports }}"
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["install"]
+
+    - name: "Start the service"
+      ansible.builtin.service:
+        enabled: true
+        name: "traefik"
+        state: "restarted"
+        daemon_reload: true
+      when: "'traefik.service' in ansible_facts.services"
+      register: "service_status"
+      tags: ["install"]
+
+    ## +------------------------------------------+
+    ## |                UNINSTALL                 |
+    ## +------------------------------------------+
+
+    - name: "Stop the service"
+      ansible.builtin.service:
+        enabled: false
+        name: "traefik"
+        state: "stopped"
+      when: "'traefik.service' in ansible_facts.services"
+      tags: ["uninstall"]
+
+    - name: "Close the external firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "disabled"
+      loop: "{{ external_ports }}"
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["uninstall"]
+
+    - name: "Remove the files and directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: "absent"
+      loop:
+        - "/etc/systemd/system/traefik.service"
+        - "/etc/systemd/system/traefik.service.d"
+        - "/opt/traefik"
+      tags: ["uninstall"]
+...

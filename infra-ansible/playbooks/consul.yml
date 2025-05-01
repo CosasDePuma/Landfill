@@ -1,0 +1,211 @@
+---
+- name: "Nomad installation"
+  hosts: "cluster"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Install the dependencies"
+      block:
+        - name: "Install the dependencies using 'APT"
+          ansible.builtin.apt:
+            name: []  # TODO: Add the required dependencies
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Install the dependencies using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["dnf-plugins-core"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Add the Hashicorp repository"
+      ansible.builtin.shell:
+        cmd: "dnf config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo"
+        creates: "/etc/yum.repos.d/hashicorp.repo"
+      when: "ansible_pkg_mgr == 'dnf'"
+      tags: ["install"]
+
+    - name: "Install the packages"
+      block:
+        - name: "Install the packages using 'APT"
+          ansible.builtin.apt:
+            name: []  # TODO: Add the required packages
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Install the packages using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["consul", "consul-cni"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Create the directories"
+      ansible.builtin.file:
+        path: "/etc/consul.d/storage"
+        state: "directory"
+        owner: "consul"
+        group: "consul"
+        mode: "0755"
+      tags: ["install"]
+
+    - name: "Create the configuration file"
+      ansible.builtin.copy:
+        dest: "/etc/consul.d/consul.hcl"
+        owner: "consul"
+        group: "consul"
+        mode: "0640"
+        # yamllint disable rule:indentation
+        content: |-
+          # +--------------------+
+          # |      GENERAL       |
+          # +--------------------+
+          datacenter = "homelab"
+          data_dir   = "/etc/consul.d/storage"
+          retry_join = ["{{ groups['cluster_managers'] | reject('equalto', inventory_hostname) | list | join('", "') }}"]
+          # +--------------------+
+          # |        LOGS        |
+          # +--------------------+
+          log_level = "INFO"
+          log_file  = "/etc/consul.d/consul.log"
+          # +--------------------+
+          # |       SERVER       |
+          # +--------------------+
+          bind_addr        = "{{ ansible_host }}"
+          client_addr      = "127.0.0.1"
+          server           = true
+          bootstrap_expect = {{ groups['cluster_managers'] | length }}
+          ports {
+            dns = 8600
+            http = 8500
+            https = -1
+            grpc = 8502
+            grpc_tls = -1
+            serf_lan = 8301
+            serf_wan = -1
+            server = 8300
+          }
+          # +--------------------+
+          # |       WEBUI        |
+          # +--------------------+
+          ui_config {
+            enabled = true
+          }
+          # +--------------------+
+          # |      CONNECT       |
+          # +--------------------+
+          connect {
+            enabled = true
+          }
+          # +--------------------+
+          # |      SECURITY      |
+          # +--------------------+
+          encrypt              = "cDKGJsyi1Aee2dObgIM/Ra8LCAqjEOhhROZA4v8Kg/0="
+          enable_script_checks = true
+          disable_update_check = true
+        # yamllint enable rule:indentation
+      tags: ["install"]
+
+    - name: "Fix the systemd unit file"
+      ansible.builtin.lineinfile:
+        path: "/etc/systemd/system/multi-user.target.wants/consul.service"
+        regexp: "^Type="
+        line: "Type=simple"
+        state: "present"
+      tags: ["install"]
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    - name: "Open the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "enabled"
+      loop: ["8300/tcp", "8301/tcp", "8301/udp"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["install"]
+
+    - name: "Start the service"
+      ansible.builtin.service:
+        enabled: true
+        name: "consul"
+        state: "restarted"
+        daemon_reload: true
+      when: "'consul.service' in ansible_facts.services"
+      register: "service_status"
+      tags: ["install"]
+
+    # +------------------------------------------+
+    # |                UNINSTALL                 |
+    # +------------------------------------------+
+
+    - name: "Stop the service"
+      ansible.builtin.service:
+        enabled: false
+        name: "consul"
+        state: "stopped"
+      when: "'consul.service' in ansible_facts.services"
+      tags: ["uninstall"]
+
+    - name: "Close the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "disabled"
+      loop: ["8300/tcp", "8301/tcp", "8301/udp"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["uninstall"]
+
+    - name: "Remove the packages"
+      block:
+        - name: "Remove the packages using 'APT'"
+          ansible.builtin.apt:
+            name: [""]  # TODO: Add the required packages
+            state: "absent"
+            autoclean: true
+            autoremove: true
+            purge: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["uninstall"]
+
+        - name: "Remove the packages using 'DNF'"
+          ansible.builtin.dnf:
+            autoremove: true
+            name: ["consul", "consul-cni"]
+            state: "absent"
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["uninstall"]
+
+    - name: "Remove the files and directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: "absent"
+      loop: ["/etc/consul.d/", "/etc/yum.repos.d/hashicorp.repo"]
+      tags: ["uninstall"]
+...

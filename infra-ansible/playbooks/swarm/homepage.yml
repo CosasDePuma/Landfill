@@ -1,0 +1,185 @@
+---
+- name: "Homepage stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    - name: "Check if the 'public' network exists"
+      community.docker.docker_network_info:
+        name: "public"
+      register: "public_network"
+      tags: ["start"]
+
+    - name: "'public' network should exists"
+      ansible.builtin.fail:
+        msg: "'public' network is not present"
+      when: "public_network.exists == false"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "homepage"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create an empty YAML"
+      community.docker.docker_config:
+        name: "empty-yaml"
+        state: "present"
+        data: |-
+          ---
+          ...
+      tags: ["start"]
+
+    - name: "Create the configuration"
+      community.docker.docker_config:
+        name: "homepage-config"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          ---
+          title: "{{ domain }}"
+          theme: "dark"
+          color: "slate"
+          statusStyle: "dot"
+          hideVersion: true
+          layout:
+            Services:
+              style: "row"
+              columns: 4
+            Daemons:
+              style: "row"
+              columns: 4
+            Hardware:
+              style: "column"
+            DNS:
+              style: "column"
+          quicklaunch:
+            searchDescriptions: true
+            hideInternetSearch: true
+            showSearchSuggestions: false
+            hideVisitURL: true
+            provider: google
+          ...
+        # yamllint enable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the static bookmarks"
+      community.docker.docker_config:
+        name: "homepage-bookmarks"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          ---
+          - Hardware:
+            - Router:
+              - href: "http://192.168.1.1/"
+                icon: "https://upload.wikimedia.org/wikipedia/commons/1/1d/Digi_Logo.png"
+                description: "H3600 V9"
+            - Proxmox:
+              - href: "https://192.168.1.254:8006/"
+                icon: "sh-proxmox"
+                description: "Virtualization platform"
+          - DNS:
+            - Cloudflare:
+              - href: "https://dash.cloudflare.com/"
+                icon: "sh-cloudflare"
+                description: "Network services and cloud provider."
+            - DuckDNS:
+              - href: "https://www.duckdns.org/"
+                icon: "sh-duckdns"
+                description: "Free and reliable DynDNS provider."
+          ...
+        # yamllint enable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the docker integration"
+      community.docker.docker_config:
+        name: "homepage-docker"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          ---
+          my-docker:
+            socket: "/var/run/docker.sock"
+            swarm: true
+          ...
+        # yamllint enable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "homepage"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              homepage:
+                image: "ghcr.io/gethomepage/homepage:latest"
+                networks: ["public"]
+                volumes:
+                  - "/var/run/docker.sock:/var/run/docker.sock:ro"
+                configs:
+                  - source: "homepage-config"
+                    target: "/app/config/settings.yaml"
+                  - source: "homepage-bookmarks"
+                    target: "/app/config/bookmarks.yaml"
+                  - source: "homepage-docker"
+                    target: "/app/config/docker.yaml"
+                  - source: "empty-yaml"
+                    target: "/app/config/services.yaml"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  placement:
+                    constraints: ["node.role == manager"]
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.homepage.rule=Host(`home.{{ domain }}`)"
+                    - "traefik.http.routers.homepage.entrypoints=https"
+                    - "traefik.http.routers.homepage.middlewares=authelia@file"
+                    - "traefik.http.services.homepage.loadbalancer.server.port=3000"
+            configs:
+              empty-yaml:         { external: true }
+              homepage-bookmarks: { external: true }
+              homepage-config:    { external: true }
+              homepage-docker:    { external: true }
+            networks:
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "homepage"
+        state: "absent"
+      tags: ["stop"]
+...

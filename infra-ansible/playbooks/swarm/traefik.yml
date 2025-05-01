@@ -1,0 +1,325 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/playbook.json
+---
+- name: "Traefik stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "traefik"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the network"
+      community.docker.docker_network:
+        name: "public"
+        driver: "overlay"
+        scope: "swarm"
+        state: "present"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/traefik"
+        state: "directory"
+      tags: ["start"]
+
+    - name: "Create the static configuration"
+      community.docker.docker_config:
+        name: "traefik-static"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          ---
+          accesslog:
+            format: "common"
+            filepath: "/data/access.log"
+          api:
+            dashboard: true
+            insecure: false
+          certificatesResolvers:
+            letsencrypt:
+              acme:
+                email: "{{ acme.email_user | default('acme',True) }}@{{ domain }}"
+                storage: "/data/acme.json"
+                caServer: "https://acme-v02.api.letsencrypt.org/directory"
+                dnsChallenge:
+                  provider: "{{ acme.provider }}"
+                  delayBeforeCheck: 0
+                  resolvers: ["1.1.1.1:53", "8.8.8.8:53"]
+          entryPoints:
+            dns-tcp:   { address: ":53/tcp" }
+            dns-udp:   { address: ":53/udp" }
+            wireguard: { address: ":51820/udp" }
+            http:
+              address: ":80/tcp"
+              asDefault: true
+              forwardedHeaders: { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              proxyProtocol:    { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              http:
+                redirections:
+                  entryPoint:
+                    to: "https"
+                    scheme: "https"
+            https:
+              address: ":443/tcp"
+              forwardedHeaders: { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              proxyProtocol:    { trustedIPs: ["10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+              http:
+                tls:
+                  certResolver: "letsencrypt"
+                  domains: [{ main: "{{ domain }}", sans: ["*.{{ domain }}"] }]
+          global:
+            checkNewVersion: true
+            sendAnonymousUsage: false
+          log:
+            level: "DEBUG"
+          ping:
+            entrypoint: "https"
+          providers:
+            swarm:
+              endpoint: "unix:///var/run/docker.sock"
+              network: "public"
+              exposedByDefault: false
+              watch: true
+            file:
+              filename: "/etc/traefik/dynamic.yml"
+              watch: true
+          ...
+        # yamllint enable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the dynamic configuration"
+      community.docker.docker_config:
+        name: "traefik-dynamic"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          ---
+          http:
+            middlewares:
+              authelia:
+                forwardAuth:
+                  address: "http://authelia_authelia:9091/api/authz/forward-auth"
+                  trustForwardHeader: true
+                  authResponseHeaders:
+                    - "Remote-User"
+                    - "Remote-Groups"
+                    - "Remote-Name"
+                    - "Remote-Email"
+                  tls: { insecureSkipVerify: true }
+
+              common:
+                chain:
+                  middlewares:
+                    - "compression@file"
+                    - "jokes@file"
+                    - "security@file"
+
+              compression:
+                compress:
+                  minResponseBodyBytes: 1024
+                  excludedContentTypes:
+                    - "text/event-stream"
+
+              hsts:
+                headers:
+                  forceSTSHeader: true
+                  stsPreload: true
+                  stsSeconds: 315360000
+                  stsIncludeSubdomains: true
+                  customResponseHeaders:
+                    X-Forwarded-Proto: https
+
+              https-only:
+                chain:
+                  middlewares:
+                    - "https-redirect@file"
+                    - "hsts@file"
+
+              https-redirect:
+                redirectScheme:
+                  port: 443
+                  scheme: "https"
+                  permanent: true
+
+              jokes:
+                headers:
+                  customResponseHeaders:
+                    Server: "'; DROP TABLE users; -- --"
+                    X-PoweredBy: "Pumas, unicorns and rainbows </3"
+                    X-NaNaNaNaNaNaNaNa: "Batman!"
+                    X-Clacks-Overhead: "GNU Kike Fontan"
+
+              security:
+                chain:
+                  middlewares:
+                    - "security-headers@file"
+                    - "https-only@file"
+
+              security-headers:
+                headers:
+                  browserXssFilter: true                          # Prevent reflected XSS attacks
+                  contentTypeNosniff: true                        # Prevent browsers from trying to guess a MIME type
+                  frameDeny: true                                 # Prevent clickjacking attacks
+                  isDevelopment: false                            # Always act as if the app is in production
+                  referrerPolicy: "no-referrer"                   # Hide the Referer header
+                  customResponseHeaders:                          # Prevent more things...
+                    Cross-Origin-Embedder-Policy: "require-corp"
+                    Cross-Origin-Opener-Policy: "same-origin"
+                    Cross-Origin-Resource-Policy: "same-site"
+                    X-DNS-Prefetch-Control: "off"
+                  permissionsPolicy: "bluetooth=(), camera=(), geolocation=(), microphone=()"
+
+          tls:
+            options:
+              default:
+                minVersion: "VersionTLS12"
+                sniStrict: true
+                cipherSuites:
+                  - "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+                  - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+                  - "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305"
+                  - "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+                  - "TLS_FALLBACK_SCSV"  # RFC 7507
+                curvePreferences:
+                  - "secp521r1"
+                  - "secp384r1"
+          ...
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "traefik"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              traefik:
+                image: "traefik:latest"
+                ports:
+                  - "0.0.0.0:53:53/tcp"        # DNS
+                  - "0.0.0.0:53:53/udp"        # DNS
+                  - "0.0.0.0:80:80/tcp"        # HTTP
+                  - "0.0.0.0:443:443/tcp"      # HTTPS
+                  - "0.0.0.0:51820:51820/udp"  # WireGuard
+                networks: ["public", "dns"]
+                volumes:
+                  - "/var/run/docker.sock:/var/run/docker.sock:ro"
+                  - "/mnt/nfs/lab/traefik:/data:rw"
+                configs:
+                  - source: "traefik-static"
+                    target: "/etc/traefik/traefik.yml"
+                  - source: "traefik-dynamic"
+                    target: "/etc/traefik/dynamic.yml"
+                environment: "{{ acme.tokens.items() | map('join','=') | list }}"
+                deploy:
+                  mode: "global"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.traefik.rule=Host(`lb.{{ domain }}`)"
+                    - "traefik.http.routers.traefik.entrypoints=https"
+                    - "traefik.http.routers.traefik.service=api@internal"
+                    - "traefik.http.routers.traefik.middlewares=authelia@file,traefik-redirect@swarm"
+                    - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+                    - "traefik.http.middlewares.traefik-redirect.redirectregex.regex=^(http:\\/\\/(\\[[\\w:.]+\\]|[\\w\\._-]+)(:\\d+)?)\\/$$"
+                    - "traefik.http.middlewares.traefik-redirect.redirectregex.replacement=$${1}/dashboard/"
+                    - "homepage.name=Traefik"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-traefik"
+                    - "homepage.description=Reverse proxy."
+                    - "homepage.href=https://lb.{{ domain }}"
+              whoami:
+                image: "traefik/whoami:latest"
+                networks: ["public"]
+                deploy:
+                  mode: "global"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.whoami.rule=Host(`lb.{{ domain }}`) && PathPrefix (`/whoami`)"
+                    - "traefik.http.routers.whoami.entrypoints=https"
+                    - "traefik.http.services.whoami.loadbalancer.server.port=80"
+                    - "traefik.http.routers.whoami.middlewares=authelia@file"
+            configs:
+              traefik-static:  { external: true }
+              traefik-dynamic: { external: true }
+            networks:
+              dns:     { external: true }
+              public:  { external: true }
+      tags: ["start"]
+
+    - name: "Open the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "enabled"
+      loop: ["80/tcp", "443/tcp", "53/tcp", "53/udp", "51820/udp"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Close the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "disabled"
+      loop: ["80/tcp", "443/tcp", "53/tcp", "53/udp", "51820/udp"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["stop"]
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "traefik"
+        state: "absent"
+      tags: ["stop"]
+
+    - name: "Remove the configuration"
+      community.docker.docker_config:
+        name: "{{ item }}"
+        state: "absent"
+      loop: ["traefik-static", "traefik-dynamic"]
+      tags: ["stop"]
+
+    - name: "Remove the network"
+      community.docker.docker_network:
+        name: "public"
+        state: "absent"
+        force: true
+      tags: ["stop"]
+...

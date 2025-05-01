@@ -1,0 +1,67 @@
+---
+- name: "MobSF stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "mobsf"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/mobsf"
+        state: "directory"
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "mobsf"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              mobsf:
+                image: "opensecurity/mobile-security-framework-mobsf:latest"
+                networks: ["public"]
+                #volumes:
+                  #- "/mnt/nfs/lab/mobsf:/home/mobsf/.MobSF:rw"
+                environment:
+                  - "TIME_ZONE={{ tz | default('UTC') }}"
+                  - "MOBSF_DISABLE_AUTHENTICATION=true"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.homepage.rule=Host(`mobile.{{ domain }}`)"
+                    - "traefik.http.routers.homepage.entrypoints=https"
+                    - "traefik.http.routers.homepage.middlewares=authelia@file"
+                    - "traefik.http.services.homepage.loadbalancer.server.port=8000"
+                    - "homepage.name=MobSF"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-android-light"
+                    - "homepage.description=Mobile security framework."
+                    - "homepage.href=https://mobile.{{ domain }}"
+            networks:
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "mobsf"
+        state: "absent"
+      tags: ["stop"]
+...

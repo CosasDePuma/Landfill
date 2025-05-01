@@ -1,0 +1,82 @@
+---
+- name: "Docker Swarm installation"
+  hosts: "cluster"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    - name: "Docker needs to be installed"
+      ansible.builtin.fail:
+        msg: "Docker needs to be installed"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["install", "uninstall"]
+
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Start the service"
+      ansible.builtin.service:
+        enabled: true
+        name: "docker"
+        state: "started"
+      tags: ["install", "uninstall"]
+
+    - name: "Open the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "enabled"
+      loop: ["2377/tcp", "7946/tcp", "7946/udp", "4789/udp"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["install"]
+
+    - name: "Init the first node"
+      community.general.docker_swarm:
+        state: "present"
+        advertise_addr: "{{ ansible_host }}"
+      register: "manager"
+      when: "inventory_hostname == groups['cluster_managers'][0]"
+      run_once: true
+      tags: ["install"]
+
+    - name: "Init the rest of the nodes"
+      community.general.docker_swarm:
+        state: "join"
+        advertise_addr: "{{ ansible_host }}"
+        join_token: "{{ manager.swarm_facts.JoinTokens.Manager if inventory_hostname in groups['cluster_managers'] else manager.swarm_facts.JoinTokens.Worker }}"  # yamllint disable-line rule:line-length
+        remote_addrs: ["{{ groups['cluster_managers'][0] }}"]
+      when: "inventory_hostname != groups['cluster_managers'][0]"
+      tags: ["install"]
+
+    # +------------------------------------------+
+    # |                UNINSTALL                 |
+    # +------------------------------------------+
+
+    - name: "Leave the swarm"
+      community.general.docker_swarm:
+        state: "absent"
+        force: true
+      tags: ["uninstall"]
+
+    - name: "Close the firewall"
+      ansible.builtin.firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: "disabled"
+      loop: ["2377/tcp", "7946/tcp", "7946/udp", "4789/udp"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"
+      tags: ["uninstall"]
+...

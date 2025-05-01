@@ -1,0 +1,47 @@
+---
+- name: "NFS client installation"
+  hosts: "cluster"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Install NFS client"
+      block:
+        - name: "Install NFS client using 'DNF'"
+          ansible.builtin.dnf:
+            name: "nfs-utils"
+            state: "present"
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Mount the NFS share"
+      ansible.posix.mount:
+        fstype: "nfs"
+        path: "/mnt/nfs"
+        opts: "nfsvers=4.1,defaults,nolock,rw,soft,sync"
+        src: "{{ groups['nfs'][0] }}:/mnt/nfs"
+        state: "mounted"
+      tags: ["install"]
+
+    # +------------------------------------------+
+    # |                UNINSTALL                 |
+    # +------------------------------------------+
+
+    - name: "Unmount the NFS share"
+      ansible.posix.mount:
+        path: "/mnt/nfs"
+        state: "absent"
+      tags: ["uninstall"]
+
+    - name: "Remove the NFS client"
+      block:
+        - name: "Remove the NFS client using 'DNF'"
+          ansible.builtin.dnf:
+            autoremove: true
+            name: "nfs-utils"
+            state: "absent"
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["uninstall"]
+...

@@ -1,0 +1,98 @@
+---
+- name: "n8n stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    - name: "Check if the 'public' network exists"
+      community.docker.docker_network_info:
+        name: "public"
+      register: "public_network"
+      tags: ["start"]
+
+    - name: "'public' network should exists"
+      ansible.builtin.fail:
+        msg: "'public' network is not present"
+      when: "public_network.exists == false"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "n8n"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/n8n"
+        state: "directory"
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "n8n"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              n8n:
+                image: "docker.n8n.io/n8nio/n8n:latest"
+                networks: ["public"]
+                volumes:
+                  - "/mnt/nfs/lab/n8n:/home/node/.n8n"
+                environment:
+                  - "TZ={{ tz | default('UTC') }}"
+                  - "GENERIC_TIMEZONE={{ tz | default('UTC') }}"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.excalidraw.rule=Host(`flow.{{ domain }}`)"
+                    - "traefik.http.routers.excalidraw.entrypoints=https"
+                    - "traefik.http.routers.excalidraw.middlewares=authelia@file"
+                    - "traefik.http.services.excalidraw.loadbalancer.server.port=5678"
+                    - "homepage.name=n8n"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-n8n"
+                    - "homepage.description=Workflow automation."
+                    - "homepage.href=https://flow.{{ domain }}"
+            networks:
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "n8n"
+        state: "absent"
+      tags: ["stop"]
+...

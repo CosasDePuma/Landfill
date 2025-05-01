@@ -1,0 +1,88 @@
+---
+- name: "Watchtower stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "watchtower"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "watchtower"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              watchtower:
+                image: "containrrr/watchtower:latest"
+                volumes:
+                  - "/var/run/docker.sock:/var/run/docker.sock:rw"
+                environment:
+                  - "TZ={{ tz | default('UTC') }}"
+                  - "WATCHTOWER_CLEANUP=true"
+                  - "WATCHTOWER_DEBUG=true"
+                  - "WATCHTOWER_LABEL_ENABLE=true"
+                  - "WATCHTOWER_HTTP_API_METRICS=true"
+                  - "WATCHTOWER_HTTP_API_TOKEN=watchtower"
+                  - "WATCHTOWER_REMOVE_VOLUMES=true"
+                  - "WATCHTOWER_SCHEDULE=0 0 * * *"
+                healthcheck:
+                  test: "/watchtower --health-check"
+                  interval: "30s"
+                  timeout: "10s"
+                  retries: 3
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  placement:
+                    constraints: ["node.role == manager"]
+                  resources:
+                    limits:
+                      cpus: "0.1"
+                      memory: "128M"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "homepage.name=Watchtower"
+                    - "homepage.group=Daemons"
+                    - "homepage.icon=sh-watchtower"
+                    - "homepage.description=Docker container updates."
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "watchtower"
+        state: "absent"
+      tags: ["stop"]
+...

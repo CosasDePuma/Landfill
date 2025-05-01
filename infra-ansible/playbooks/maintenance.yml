@@ -1,0 +1,79 @@
+---
+- name: "Maintenance tasks"
+  hosts: "all"
+  become: true
+  tasks:
+
+    # +------------------------------------------+
+    # |                 PACKAGES                 |
+    # +------------------------------------------+
+
+    - name: "Update and clean package manager"
+      block:
+        - name: "Update and clean APT"
+          when: "ansible_pkg_mgr == 'apt'"
+          ansible.builtin.apt:
+            autoremove: true
+            autoclean: true
+            cache_valid_time: 3600
+            purge: true
+            update_cache: true
+            upgrade: true
+          register: "updated_pkgs"
+
+        - name: "DNF"
+          when: "ansible_pkg_mgr == 'dnf'"
+          block:
+            - name: "Update DNF"
+              ansible.builtin.dnf:
+                name: "*"
+                state: "latest"
+                update_cache: true
+                update_only: true
+              register: "updated_pkgs"
+
+            - name: "Clean DNF"
+              ansible.builtin.dnf:
+                autoremove: true
+
+        - name: "Print the updated packages"
+          ansible.builtin.debug:
+            msg: "{{ updated_pkgs.results | map(attribute='name') | list }}"
+          when: "updated_pkgs.changed"
+
+    # +------------------------------------------+
+    # |                   LOGS                   |
+    # +------------------------------------------+
+
+    - name: "Clean logs"
+      block:
+        - name: "Find the rotated logs older than a month"
+          ansible.builtin.find:
+            age: "30d"
+            file_type: "file"
+            hidden: true
+            paths: "/var/log"
+            patterns: "^.*\\.(t?(b|g)z2?|[1-9]+)$"
+            recurse: true
+            use_regex: true
+          register: "found_rlogs"
+
+        - name: "Process the rotated logs found"
+          ansible.builtin.set_fact:
+            cleaned_rlogs:
+              "{{ found_rlogs.files | map(attribute='path') | list }}"
+          when: "found_rlogs.matched > 0"
+
+        - name: "Remove the rotated logs"
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: "absent"
+          loop: "{{ cleaned_rlogs }}"
+          when: "found_rlogs.matched > 0"
+
+        - name: "Clean the journalctl"
+          ansible.builtin.shell:
+            cmd: "journalctl --vacuum-time=10m"
+          register: "cleaned_journalctl"
+          changed_when: "cleaned_journalctl.rc == 0"
+...

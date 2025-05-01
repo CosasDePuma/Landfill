@@ -1,0 +1,149 @@
+---
+- name: "FirewallD installation"
+  hosts: "all"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Uninstall UFW"
+      block:
+        - name: "Uninstall UFW using 'APT'"
+          ansible.builtin.apt:
+            name: ["ufw"]
+            state: "absent"
+            autoclean: true
+            autoremove: true
+            purge: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Uninstall UFW using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["ufw"]
+            state: "absent"
+            autoremove: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Install the packages"
+      block:
+        - name: "Install the packages using 'APT'"
+          ansible.builtin.apt:
+            name: ["firewalld", "python3-nftables"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Install the packages using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["firewalld", "python3-firewall"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    - name: "Start the service"
+      ansible.builtin.service:
+        enabled: true
+        name: "firewalld"
+        state: "started"
+      when: '"firewalld.service" in ansible_facts.services'
+      tags: ["install"]
+
+    - name: "Use the 'drop' zone as default"
+      ansible.builtin.lineinfile:
+        path: "/etc/firewalld/firewalld.conf"
+        regexp: "^DefaultZone="
+        line: "DefaultZone=drop"
+        state: "present"
+      tags: ["install"]
+
+    - name: "Allow SSH traffic"
+      ansible.posix.firewalld:
+        immediate: true
+        permanent: true
+        port: "22/tcp"
+        zone: "{{ item }}"
+        state: "enabled"
+      loop: ["drop", "internal"]
+      tags: ["install"]
+
+    - name: "Set the 'internal' sources"
+      ansible.posix.firewalld:
+        immediate: true
+        permanent: true
+        source: "{{ item }}"
+        zone: "internal"
+        state: "enabled"
+      loop: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+      tags: ["install"]
+
+    - name: "Remove the default internal services"
+      ansible.posix.firewalld:
+        immediate: true
+        permanent: true
+        service: "{{ item }}"
+        zone: "internal"
+        state: "disabled"
+      loop: ["cockpit", "dhcpv6-client", "mdns", "samba-client", "ssh"]
+      tags: ["install"]
+
+    - name: "Set the default target"
+      ansible.posix.firewalld:
+        immediate: true
+        target: "DROP"
+        zone: "{{ item }}"
+        state: "enabled"
+      loop: ["drop", "internal"]
+      tags: ["install"]
+
+    - name: "Reload the firewall"
+      ansible.builtin.service:
+        name: "firewalld"
+        state: "reloaded"
+      when: '"firewalld.service" in ansible_facts.services'
+      tags: ["install"]
+
+    # +------------------------------------------+
+    # |                UNINSTALL                 |
+    # +------------------------------------------+
+
+    - name: "Stop the service"
+      ansible.builtin.service:
+        enabled: false
+        name: "firewalld"
+        state: "stopped"
+      when: '"firewalld.service" in ansible_facts.services'
+      tags: ["uninstall"]
+
+    - name: "Remove the packages"
+      block:
+        - name: "Remove the packages using 'APT'"
+          ansible.builtin.apt:
+            name: ["firewalld"]
+            state: "absent"
+            autoclean: true
+            autoremove: true
+            purge: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["uninstall"]
+
+        - name: "Remove the packages using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["firewalld"]
+            state: "absent"
+            autoremove: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["uninstall"]
+...

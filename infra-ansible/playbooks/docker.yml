@@ -1,0 +1,111 @@
+---
+- name: "Docker installation"
+  hosts: "cluster"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |                 INSTALL                  |
+    # +------------------------------------------+
+
+    - name: "Add the Docker CE repository"
+      ansible.builtin.shell:
+        cmd: "dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo"
+        creates: "/etc/yum.repos.d/docker-ce.repo"
+      when: "ansible_pkg_mgr == 'dnf'"
+      tags: ["install"]
+
+    - name: "Install the packages"
+      block:
+        - name: "Install the packages using 'APT"
+          ansible.builtin.apt:
+            name: ["docker.io", "python3", "python3-pip"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["install"]
+
+        - name: "Install the packages using 'DNF'"
+          ansible.builtin.dnf:
+            name: ["containerd.io", "docker-ce", "docker-ce-cli", "python3", "python3-pip"]
+            state: "latest"
+            update_cache: true
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["install"]
+
+    - name: "Install the Docker library for Python"
+      ansible.builtin.pip:
+        name: "{{ item }}"
+        state: "present"
+      loop: ["cryptography", "docker", "jsondiff"]
+      tags: ["install"]
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["install", "uninstall"]
+
+    - name: "Start the service"
+      ansible.builtin.service:
+        enabled: true
+        name: "docker"
+        state: "started"
+      when: "'docker.service' in ansible_facts.services"
+      register: "service_status"
+      tags: ["install", "uninstall"]
+
+    # +------------------------------------------+
+    # |                UNINSTALL                 |
+    # +------------------------------------------+
+
+    - name: "Remove all containers"
+      community.docker.docker_prune:
+        builder_cache: true
+        containers: true
+        images: true
+        images_filters:
+          dangling: true
+        networks: true
+        volumes: true
+      when: "'docker.service' in ansible_facts.services and service_status.state == 'running'"
+      tags: ["uninstall"]
+
+    - name: "Stop the service"
+      ansible.builtin.service:
+        enabled: false
+        name: "docker"
+        state: "stopped"
+      when: "'docker.service' in ansible_facts.services and service_status.state == 'running'"
+      tags: ["uninstall"]
+
+    - name: "Remove the Docker library for Python"
+      ansible.builtin.pip:
+        name: "{{ item }}"
+        state: "absent"
+      loop: ["cryptography", "docker", "jsondiff"]
+      tags: ["uninstall"]
+
+    - name: "Remove the packages"
+      block:
+        - name: "Remove the packages using 'APT'"
+          ansible.builtin.apt:
+            name: ["docker.io"]
+            state: "absent"
+            autoclean: true
+            autoremove: true
+            purge: true
+          when: "ansible_pkg_mgr == 'apt'"
+          tags: ["uninstall"]
+
+        - name: "Remove the packages using 'DNF'"
+          ansible.builtin.dnf:
+            autoremove: true
+            name: ["containerd.io", "docker-ce", "docker-ce-cli"]
+            state: "absent"
+          when: "ansible_pkg_mgr == 'dnf'"
+          tags: ["uninstall"]
+
+    - name: "Remove the Docker CE repository"
+      ansible.builtin.file:
+        path: "/etc/yum.repos.d/docker-ce.repo"
+        state: "absent"
+      when: "ansible_pkg_mgr == 'dnf'"
+...

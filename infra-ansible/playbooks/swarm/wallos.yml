@@ -1,0 +1,99 @@
+---
+- name: "Wallos stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    - name: "Check if the 'public' network exists"
+      community.docker.docker_network_info:
+        name: "public"
+      register: "public_network"
+      tags: ["start"]
+
+    - name: "'public' network should exists"
+      ansible.builtin.fail:
+        msg: "'public' network is not present"
+      when: "public_network.exists == false"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "wallos"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/wallos/{{ item }}"
+        state: "directory"
+      loop: ["db", "logos"]
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "wallos"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              wallos:
+                image: "bellamy/wallos:latest"
+                networks: ["public"]
+                volumes:
+                  - "/mnt/nfs/lab/wallos/db:/var/www/html/db:rw"
+                  - "/mnt/nfs/lab/wallos/logos:/var/www/html/images/uploads/logos:rw"
+                environment:
+                  - "TZ={{ tz | default('UTC') }}"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.wallos.rule=Host(`subs.{{ domain }}`)"
+                    - "traefik.http.routers.wallos.entrypoints=https"
+                    - "traefik.http.routers.wallos.middlewares=authelia@file"
+                    - "traefik.http.services.wallos.loadbalancer.server.port=80"
+                    - "homepage.name=Wallos"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-wallos"
+                    - "homepage.description=Subscription tracker."
+                    - "homepage.href=https://subs.{{ domain }}"
+            networks:
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "wallos"
+        state: "absent"
+      tags: ["stop"]
+...

@@ -1,0 +1,117 @@
+---
+- name: "WG-Easy prerequisites"
+  hosts: "cluster"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Ensure IP tables is loaded"
+      community.general.modprobe:
+        name: "ip_tables"
+        persistent: "present"
+        state: "present"
+      tags: ["start"]
+
+- name: "WG-Easy stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "wg-easy"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/wg-easy"
+        state: "directory"
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "wg-easy"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              wg-easy:
+                image: "ghcr.io/wg-easy/wg-easy:latest"
+                networks: ["public"]
+                volumes:
+                  - "/mnt/nfs/lab/wg-easy:/etc/wireguard:rw"
+                environment:
+                  - "WG_HOST={{ domain }}"
+                  - "WG_DEFAULT_ADDRESS=10.10.0.x"
+                  - "WG_DEFAULT_DNS={{ ansible_host }}"
+                  - "WG_ALLOWED_IPS=10.0.0.0/8,127.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+                  - "WG_LANG=en"
+                  - "WG_MTU=1360"
+                  - "UI_CHART_TYPE=2"
+                  - "UI_TRAFFIC_STATS=true"
+                  - "UI_ENABLE_SORT_CLIENTS=true"
+                  - "WG_DEVICE=eth1"
+                cap_add:
+                  - "NET_ADMIN"
+                  - "SYS_MODULE"
+                sysctls:
+                  - "net.ipv4.conf.all.src_valid_mark=1"
+                  - "net.ipv4.ip_forward=1"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.wg-easy.rule=Host(`vpn.{{ domain }}`)"
+                    - "traefik.http.routers.wg-easy.entrypoints=https"
+                    - "traefik.http.routers.wg-easy.middlewares=authelia@file"
+                    - "traefik.http.services.wg-easy.loadbalancer.server.port=51821"
+                    - "traefik.udp.routers.wireguard.entrypoints=wireguard"
+                    - "traefik.udp.services.wireguard.loadbalancer.server.port=51820"
+                    - "homepage.name=WG-Easy"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-wireguard"
+                    - "homepage.description=WireGuard VPN server."
+                    - "homepage.href=https://vpn.{{ domain }}"
+            networks:
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "wg-easy"
+        state: "absent"
+      tags: ["stop"]
+...

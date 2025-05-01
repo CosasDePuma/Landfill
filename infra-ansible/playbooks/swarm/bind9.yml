@@ -1,0 +1,203 @@
+---
+- name: "Bind9 stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "bind9"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the network"
+      community.docker.docker_network:
+        name: "dns"
+        driver: "overlay"
+        scope: "swarm"
+        state: "present"
+      tags: ["start"]
+
+    - name: "Create the configuration"
+      community.docker.docker_config:
+        name: "bind9-config"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          acl internal {
+            10.0.0.0/8;
+            127.0.0.0/8;
+            172.16.0.0/12;
+            192.168.0.0/16;
+          };
+
+          options {
+            directory "/var/cache/bind";
+            dnssec-validation auto;
+            auth-nxdomain no;  # conform to RFC1035
+            listen-on port 53 { any; };
+            listen-on-v6 port 53 { any; };
+            recursion yes;
+            allow-recursion { internal; };
+            allow-query { internal; };
+            allow-query-cache { internal; };
+            allow-transfer { none; };
+            empty-zones-enable no;
+            querylog yes;
+            version "{{ banner }} (DNS)";
+            forward only;
+            forwarders {
+              1.1.1.1;
+              8.8.8.8;
+            };
+          };
+
+          // External zones
+          zone "."  {
+            type hint;
+            file "/usr/share/dns/root.hints";
+          };
+          zone "localhost" {
+            type master;
+            file "/etc/bind/db.local";
+          };
+          zone "127.in-addr.arpa" {
+            type master;
+            file "/etc/bind/db.127";
+          };
+          zone "0.in-addr.arpa" {
+            type master;
+            file "/etc/bind/db.0";
+          };
+          zone "255.in-addr.arpa" {
+            type master;
+            file "/etc/bind/db.255";
+          };
+
+          // Custom zones
+          zone "{{ domain }}" IN {
+            type master;
+            file "/etc/bind/zones/{{ domain }}";
+            allow-update { none; };
+          };
+        # yamllint enable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the custom zone"
+      community.docker.docker_config:
+        name: "bind9-zone"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          $TTL 604800
+          @ IN SOA ns.{{ domain }}. root.{{ domain }}. (
+            1        ; Serial
+            604800   ; Refresh
+            86400    ; Retry
+            2419200  ; Expire
+            604800 ) ; Negative Cache TTL
+          ;
+          @  IN NS ns.{{ domain }}.
+          ns IN A  {{ ansible_host }}
+          @  IN A  {{ ansible_host }}
+          *  IN A  {{ ansible_host }}
+        # yamllint enable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "bind9"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              bind9:
+                image: "ubuntu/bind9:latest"
+                networks: ["dns"]
+                configs:
+                  - source: "bind9-config"
+                    target: "/etc/bind/named.conf"
+                  - source: "bind9-zone"
+                    target: "/etc/bind/zones/{{ domain }}"
+                security_opt: ["no-new-privileges:true"]
+                healthcheck:
+                  test: "/usr/bin/ss -ltunp | /usr/bin/grep -q ':53'"
+                  interval: "30s"
+                  timeout: "10s"
+                  retries: 3
+                restart: "on-failure"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  resources:
+                    limits:
+                      cpus: "0.01"
+                      memory: "32M"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.docker.network=dns"
+                    - "traefik.tcp.routers.bind9.rule=HostSNI(`*`)"
+                    - "traefik.tcp.routers.bind9.entrypoints=dns-tcp"
+                    - "traefik.tcp.services.bind9.loadbalancer.server.port=53"
+                    - "traefik.udp.routers.bind9.entrypoints=dns-udp"
+                    - "traefik.udp.services.bind9.loadbalancer.server.port=53"
+                    - "homepage.name=Bind9"
+                    - "homepage.group=Daemons"
+                    - "homepage.icon=sh-bind-9"
+                    - "homepage.description=DNS server."
+            configs:
+              bind9-config: { external: true }
+              bind9-zone:   { external: true }
+            networks:
+              dns: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "bind9"
+        state: "absent"
+      tags: ["stop"]
+
+    - name: "Remove the configuration"
+      community.docker.docker_config:
+        name: "{{ item }}"
+        state: "absent"
+      loop: ["bind9-config", "bind9-zone"]
+      tags: ["stop"]
+
+    - name: "Remove the network"
+      community.docker.docker_network:
+        name: "dns"
+        state: "absent"
+        force: true
+      tags: ["stop"]
+...

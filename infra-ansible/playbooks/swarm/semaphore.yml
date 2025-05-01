@@ -1,0 +1,127 @@
+---
+- name: "Semaphore stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    - name: "Check if the 'public' network exists"
+      community.docker.docker_network_info:
+        name: "public"
+      register: "public_network"
+      tags: ["start"]
+
+    - name: "'public' network should exists"
+      ansible.builtin.fail:
+        msg: "'public' network is not present"
+      when: "public_network.exists == false"
+      tags: ["start"]
+
+    - name: "Check if the 'ldap' network exists"
+      community.docker.docker_network_info:
+        name: "ldap"
+      register: "ldap_network"
+      tags: ["start"]
+
+    - name: "'ldap' network should exists"
+      ansible.builtin.fail:
+        msg: "'ldap' network is not present"
+      when: "ldap_network.exists == false"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "semaphore"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/semaphore/{{ item }}"
+        state: "directory"
+      loop: ["db", "playbooks"]
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "semaphore"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              semaphore:
+                image: "semaphoreui/semaphore:latest"
+                networks: ["public", "ldap"]
+                dns: ["{{ ansible_host }}"]
+                volumes:
+                  - "/mnt/nfs/lab/semaphore/playbooks:/playbooks:ro"
+                  - "/mnt/nfs/lab/semaphore/db:/var/lib/semaphore/db:rw"
+                environment:
+                  - "SEMAPHORE_DB_DIALECT=bolt"
+                  - "SEMAPHORE_ADMIN=admin"
+                  - "SEMAPHORE_ADMIN_NAME=Admin"
+                  - "SEMAPHORE_ADMIN_PASSWORD={{ admin.password }}"
+                  - "SEMAPHORE_ADMIN_EMAIL=admin+semaphore@{{ domain }}"
+                  - "SEMAPHORE_ACCESS_KEY_ENCRYPTION={{ secret }}"
+                  - "SEMAPHORE_LDAP_ACTIVATED=yes"
+                  - "SEMAPHORE_LDAP_HOST=openldap_openldap"
+                  - "SEMAPHORE_LDAP_PORT=389"
+                  - "SEMAPHORE_LDAP_NEEDTLS=no"
+                  - "SEMAPHORE_LDAP_DN_BIND=cn=admin,dc={{ domain | replace('.', ',dc=') }}"  # TODO: Readonly user
+                  - "SEMAPHORE_LDAP_PASSWORD={{ admin.password }}"
+                  - "SEMAPHORE_LDAP_DN_SEARCH=ou=Users,dc={{ domain | replace('.', ',dc=') }}"
+                  - "SEMAPHORE_LDAP_SEARCH_FILTER=(&(objectClass=person)(uid=%s))"
+                  - "ANSIBLE_HOST_KEY_CHECKING=false"
+                  - "TZ={{ tz | default('UTC') }}"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.semaphore.rule=Host(`iac.{{ domain }}`)"
+                    - "traefik.http.routers.semaphore.entrypoints=https"
+                    - "traefik.http.services.semaphore.loadbalancer.server.port=3000"
+                    - "homepage.name=Semaphore"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-semaphore-ui"
+                    - "homepage.description=Infrastucture as Code server."
+                    - "homepage.href=https://iac.{{ domain }}"
+            networks:
+              ldap:   { external: true }
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "semaphore"
+        state: "absent"
+      tags: ["stop"]
+...

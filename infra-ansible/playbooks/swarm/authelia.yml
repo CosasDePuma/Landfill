@@ -1,0 +1,210 @@
+---
+- name: "Authelia stack"
+  hosts: "cluster_managers[0]"
+  become: true
+  tasks:
+    # +------------------------------------------+
+    # |              PREREQUISITES               |
+    # +------------------------------------------+
+
+    - name: "Populate service facts"
+      ansible.builtin.service_facts: {}
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be started"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "'docker.service' not in ansible_facts.services"
+      tags: ["start", "stop"]
+
+    - name: "Docker needs to be running"
+      ansible.builtin.fail:
+        msg: "Docker needs to be started"
+      when: "ansible_facts.services['docker.service'].state != 'running'"
+      tags: ["start", "stop"]
+
+    - name: "Check if the 'public' network exists"
+      community.docker.docker_network_info:
+        name: "public"
+      register: "public_network"
+      tags: ["start"]
+
+    - name: "'public' network should exists"
+      ansible.builtin.fail:
+        msg: "'public' network is not present"
+      when: "public_network.exists == false"
+      tags: ["start"]
+
+    - name: "Check if the 'ldap' network exists"
+      community.docker.docker_network_info:
+        name: "ldap"
+      register: "ldap_network"
+      tags: ["start"]
+
+    - name: "'ldap' network should exists"
+      ansible.builtin.fail:
+        msg: "'ldap' network is not present"
+      when: "ldap_network.exists == false"
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                  START                   |
+    # +------------------------------------------+
+
+    - name: "Ensure that the stack is absent"
+      community.docker.docker_stack:
+        name: "authelia"
+        state: "absent"
+      tags: ["start"]
+
+    - name: "Create the persistent directories"
+      ansible.builtin.file:
+        path: "/mnt/nfs/lab/authelia"
+        state: "directory"
+      tags: ["start"]
+
+    - name: "Generate the private key"
+      community.crypto.openssl_privatekey:
+        path: "/mnt/nfs/lab/authelia/private.key"
+        size: 2048
+        type: "RSA"
+        return_content: true
+      register: "private_key"
+      tags: ["start"]
+
+    - name: "Create the configuration"
+      community.docker.docker_config:
+        name: "authelia-config"
+        state: "present"
+        # yamllint disable rule:indentation
+        data: |-
+          ---
+          access_control:
+            default_policy: "deny"
+            rules:
+              - domain: "*.{{ domain }}"
+                policy: "one_factor"
+          authentication_backend:
+            ldap:
+              address: "ldap://openldap_openldap"
+              timeout: 5
+              start_tls: false
+              base_dn: "dc={{ domain | replace('.', ',dc=') }}"
+              user: "cn=admin,dc={{ domain | replace('.', ',dc=') }}"  # FIXME: Use a readonly user
+              password: "{{ admin.password }}"
+              additional_users_dn: "ou=Users"
+              users_filter: "(&(objectClass=person)(|({username_attribute}={input})({mail_attribute}={input})))"
+              additional_groups_dn: "ou=Groups"
+              groups_filter: "(&(objectClass=groupOfUniqueNames)(uniqueMember={dn}))"
+          identity_validation:
+            reset_password:
+              jwt_secret: "{{ secret }}"
+              jwt_lifespan: "5 minutes"
+          log:
+            level: "debug"
+          notifier:
+            disable_startup_check: false
+            filesystem:
+              filename: "/config/notifications.txt"
+          regulation:
+            max_retries: 3
+            find_time: 120
+            ban_time: 300
+          server:
+            address: "tcp4://:9091"
+            endpoints:
+              authz:
+                forward-auth:
+                  implementation: "ForwardAuth"
+          session:
+            secret: "{{ secret }}"
+            name: "_Host-Auth"
+            expiration: 3600     # 1 hour
+            inactivity: 300      # 5 minutes
+            remember_me: 604800  # 1 week
+            same_site: lax
+            cookies:
+              - domain: "{{ domain }}"
+                authelia_url: "https://auth.{{ domain }}"
+          storage:
+            encryption_key: "{{ secret }}"
+            local:
+              path: /config/db.sqlite3
+          theme: "dark"
+          totp:
+            issuer: "Authelia ({{ domain }})"
+          identity_providers:
+            oidc:
+              jwks:
+                - key: |-
+          {{ private_key.privatekey | indent(width=10, first=True) }}
+              clients:
+                - client_id: "komga"
+                  client_name: "Komga"
+                  client_secret: "{{ secret | password_hash('pbkdf2_sha512') }}"
+                  public: false
+                  authorization_policy: "one_factor"
+                  redirect_uris:
+                    - "https://books.{{ domain }}/login/oauth2/code/authelia"
+                  scopes:
+                    - "openid"
+                    - "profile"
+                    - "email"
+                  grant_types:
+                    - "authorization_code"
+                  userinfo_signed_response_alg: "none"
+          ...
+        # yamllint disable rule:indentation
+      tags: ["start"]
+
+    - name: "Create the stack"
+      community.docker.docker_stack:
+        detach: true
+        name: "authelia"
+        state: "present"
+        compose:
+          - version: "3"
+            services:
+              authelia:
+                image: "authelia/authelia:latest"
+                networks: ["public", "ldap"]
+                configs:
+                  - source: "authelia-config"
+                    target: "/config/configuration.yml"
+                deploy:
+                  replicas: 1
+                  mode: "replicated"
+                  labels:
+                    - "com.centurylinklabs.watchtower.enable=true"
+                    - "traefik.enable=true"
+                    - "traefik.http.routers.authelia.rule=Host(`auth.{{ domain }}`)"
+                    - "traefik.http.routers.authelia.entrypoints=https"
+                    - "traefik.http.services.authelia.loadbalancer.server.port=9091"
+                    - "homepage.name=Authelia"
+                    - "homepage.group=Services"
+                    - "homepage.icon=sh-authelia"
+                    - "homepage.description=Authz server."
+                    - "homepage.href=https://auth.{{ domain }}"
+            configs:
+              authelia-config: { external: true }
+            networks:
+              ldap:   { external: true }
+              public: { external: true }
+      tags: ["start"]
+
+    # +------------------------------------------+
+    # |                   STOP                   |
+    # +------------------------------------------+
+
+    - name: "Remove the service"
+      community.docker.docker_stack:
+        name: "authelia"
+        state: "absent"
+      tags: ["stop"]
+
+    - name: "Remove the configuration"
+      community.docker.docker_config:
+        name: "authelia-config"
+        state: "absent"
+      tags: ["stop"]
+...

@@ -1,0 +1,81 @@
+# +---------------------------------------------+
+# |                  VARIABLES                  |
+# +---------------------------------------------+
+
+playbooks := './playbooks'
+inventory := './inventory.yml'
+variables := './variables.hcl'
+
+[doc('list the available commands')]
+default:
+	@just --list
+
+# +---------------------------------------------+
+# |                 DEVELOPMENT                 |
+# +---------------------------------------------+
+
+[group('development')]
+[doc('lint all the yaml files in the project')]
+lint:
+	@yamllint --strict --format=parsable .
+
+[linux]
+[macos]
+[group('development')]
+[doc('sanitize the inventory file')]
+sanitize:
+	@/usr/bin/awk 'BEGIN {print "# ** This is a template file. Copy it and rename it to `inventory.yml`\n"} {gsub(/"[^"]*"/, "\"\""); print}' '{{ inventory }}' \
+		| /usr/bin/tee "example.$(basename '{{ inventory }}')"
+	@/usr/bin/awk 'BEGIN {print "# ** This is a template file. Copy it and rename it to `variables.hcl`\n"} {gsub(/"[^"]*"/, "\"\""); print}' '{{ variables }}' \
+		| /usr/bin/tee "example.$(basename '{{ variables }}')"
+
+# +---------------------------------------------+
+# |                 DEPLOYMENT                  |
+# +---------------------------------------------+
+
+#                    Software
+# +---------------------------------------------+
+
+[linux]
+[macos]
+[group('deployment')]
+[doc('list the available software')]
+software:
+	@/usr/bin/find '{{ playbooks }}' -type 'f' -maxdepth '1' -name '*.yml' | /usr/bin/cut -d '/' -f3 | /usr/bin/sed -E 's/\.yml$//'
+
+[group('deployment')]
+[doc('install the `software` using `ansible`')]
+install software:
+	ansible-playbook -t 'install' '{{ playbooks }}/{{ software }}.yml'
+
+[group('deployment')]
+[doc('uninstall the `software` using `ansible`')]
+uninstall software:
+	ansible-playbook -t 'uninstall' '{{ playbooks }}/{{ software }}.yml'
+
+#                    Services
+# +---------------------------------------------+
+
+[linux]
+[macos]
+[group('deployment')]
+[doc('list the available services')]
+services:
+	@/bin/ls '{{ playbooks }}/services' | /usr/bin/sed 's/\.yml//g'
+
+[group('deployment')]
+[doc('start the `service` using `ansible`')]
+start service:
+	ansible-playbook -t start '{{ playbooks }}/services/{{ service }}.yml'
+alias s := start
+
+[group('deployment')]
+[doc('list the running services')]
+running:
+	nomad job status
+
+[group('deployment')]
+[doc('stop the `service` using `ansible`')]
+stop service:
+	ansible-playbook -t stop '{{ playbooks }}/services/{{ service }}.yml'
+alias r := stop
